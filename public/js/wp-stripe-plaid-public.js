@@ -17,6 +17,8 @@
 		    $('#sp-pay').show();
 		    opt.public_token = public_token;
 		    opt.account_id = metadata.account_id;
+		    // console.log(opt);
+		    // console.log(metadata);
 		  },
 	});
 
@@ -56,9 +58,10 @@
 				type    : 'POST',
 				data    : data,
 				success : function( data ){
+					// console.log(data);
 					$('.sp-spinner').css('opacity', 0);
 					if ( data.error ) {
-						console.log(data);
+						// console.log(data);
 						addError( 'There was an error processing your payment.' );
 					} else {
 						$('#sc-form').fadeTo('fast', 0);

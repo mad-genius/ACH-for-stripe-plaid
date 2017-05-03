@@ -134,8 +134,9 @@ class Wp_Stripe_Plaid_Public {
 
 	public function render_form(){
 
+
 		if ( !is_user_logged_in() ) {
-			printf( '<div class="lb-ach-not-logged-in" ><a href="%s">Login to make a paymet</a></div>', wp_login_url( get_the_permalink() ) );
+			printf( '<div class="lb-ach-not-logged-in" ><a href="%s">Login to make a payment</a></div>', wp_login_url( get_the_permalink() ) );
 		} 
 
 		else{
@@ -146,8 +147,9 @@ class Wp_Stripe_Plaid_Public {
 
 			if ( empty( $this->user_message ) ) {
 				$env = ( $this->settings['sp_environment'] === 'live' ) ? 'production' : 'sandbox';
-
+				$amount = ( isset( $_GET['amount']  ) ) ? (float) $_GET['amount'] : '';
 				$user = wp_get_current_user();
+				ob_start();
 			?>
 				<form action="javascript:void(0);" id="sc-form" data-env="<?php echo $env;  ?>" novalidate>
 
@@ -155,7 +157,7 @@ class Wp_Stripe_Plaid_Public {
 
 					<div class="sp-field-wrap">
 						<label>Amount</label><br/>
-						<input type="number" id="sp-amount" >
+						<input type="number" value="<?php echo $amount; ?>" id="sp-amount" >
 					</div>
 
 					<div class="sp-field-wrap">
@@ -176,6 +178,7 @@ class Wp_Stripe_Plaid_Public {
 				<div id="sp-response"></div>
 
 			<?php
+			return ob_get_clean();
 			} else {
 
 				foreach ( $this->user_message as $message ) {
@@ -188,55 +191,66 @@ class Wp_Stripe_Plaid_Public {
 
 	}
 
-	public function call_stripe( $amount, $currency, $source, $description, $email ){
+	public function call_stripe( $amount, $currency, $token, $description, $email ){
 
 		// Live or test?
 		$stripe_key = ( $this->settings['sp_environment'] === 'live' ) ? $this->settings['stripe_live_api_key'] : $this->settings['stripe_test_api_key'];
 		$meta_key = '_lb_ach_' . $this->settings['sp_environment'] . '_customer';
+		$current_user = wp_get_current_user();
+		$return = array( 'error' => false );
 
 		\Stripe\Stripe::setApiKey( $stripe_key );
+		$stripe_customer_id = get_user_meta( $current_user->ID, $meta_key, true );
 
-		$return = array( 'error' => false );
+		if (!empty($stripe_customer_id)) {
+		    $customer = \Stripe\Customer::retrieve($stripe_customer_id);
+		} 
+
+		else {
+		    // Create a Customer:
+		    $customer = \Stripe\Customer::create(array(
+		        'email' => $current_user->user_email,
+		        'source' => $token,
+		        'description' => 'WordPress User: ' . $current_user->user_login
+		    ));
+		    
+		    $stripe_customer_id = $customer->id;
+
+		    //Add to user's meta
+		    update_user_meta($current_user->ID, $meta_key, $stripe_customer_id);
+		}
+
+		// Figure out if the user is using a stored bank account or a new bank account by comparing bank account fingerprints
+		$token_data = \Stripe\Token::retrieve($token);
+
+		$this_bank_account = $token_data['bank_account'];
+		$cust_banks = $customer['sources']['data'];
+
+		foreach ($cust_banks as $bank) {
+			if ($bank['fingerprint'] == $this_bank_account['fingerprint']) {
+			    $source = $bank['id'];
+			}
+		}
+		
+		// If this bank is not an existing one, we'll add it
+		if ($source == false) {
+		    $new_source = $customer->sources->create(array('source' => $token));
+		    $source = $new_source['id'];
+		}
+
+		// Try to authorize the bank
+		$charge_args = array(
+		    'amount' => $amount,
+		    'currency' => 'usd',
+		    'description' => $description,
+		    'customer' => $stripe_customer_id, 
+		    'source' => $source
+		 );
+
 
 		try {
 
-			$user = wp_get_current_user();
-			$customer_id = get_user_meta( $user->ID, $meta_key, true );
-
-			// Returning customer - charge the customer
-			if ( $customer_id ) {
-				
-				$charge = \Stripe\Charge::create(array(
-				  "amount" => $amount,
-				  "currency" => $currency,
-				  "customer" => $customer_id,
-				  "description" => $description
-				));
-
-			} 
-			// New customer. Create, charge and store customer token.
-			else {
-
-				// Create a Customer:
-				$customer = \Stripe\Customer::create(array(
-				  "email" => $email,
-				  "source" => $source,
-				  "description" => 'WordPress Login: ' . $user->user_login
-				));
-
-				// Charge the Customer instead of the card:
-				$charge = \Stripe\Charge::create(array(
-				  "amount" => $amount,
-				  "currency" => $currency,
-				  "customer" => $customer->id,
-				  "description" => $description
-				));
-
-				// save customer meta
-				add_user_meta( get_current_user_id(), $meta_key, $customer->id, true );
-			}
-
-
+			$charge = \Stripe\Charge::create($charge_args);
 
 		} catch(\Stripe\Error\Card $e) {
 		  
